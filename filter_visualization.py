@@ -172,8 +172,6 @@ def visualize_solution(optimizer, solution=None, save_path=None, ax=None, fig=No
         selected_types_detail = ", ".join([f"{l}x{w}" for l, w in optimizer.selected_filter_types])
         title = (f"Filter Placement\n"
                 f"Coverage: {coverage*100:.2f}% of available area\n"
-                f"Filters: {filter_count}, Types: {filter_variety}\n"
-                f"{selected_types_text}: {selected_types_detail}\n"
                 f"Area breakdown: Filters {filter_percent:.2f}%, Required Gaps {gap_percent:.2f}%, Unused {unused_percent:.2f}%")
     else:
         title = (f"Filter Placement\n"

@@ -31,10 +31,14 @@ class FilterPlacementOptimizer:
         self.filter_sizes = filter_sizes
         self.max_filter_types = max_filter_types
         self.selected_filter_types = []  # Will track which filter types were selected for use
+        self.max_solutions = 5  # Maximum number of solutions to keep track of
         
         # Effective area after accounting for edge gaps
         self.effective_length = area_length - 2 * edge_gap
         self.effective_width = area_width - 2 * edge_gap
+        
+        # For tracking multiple solutions
+        self.solutions = []  # List of (solution, coverage, filter_count, filter_variety) tuples
         
         # For tracking the best solution
         self.best_solution = None
@@ -243,200 +247,80 @@ class FilterPlacementOptimizer:
         
     def optimize_greedy(self, num_trials=100):
         """
-        Find a good filter arrangement using a greedy approach with multiple trials.
+        Run multiple complete optimizations and find the best distinct solutions across all runs.
         
         Parameters:
         -----------
         num_trials : int
-            Number of randomized trials to perform
+            Number of trials per optimization run
+            
+        Returns:
+        --------
+        list of tuples
+            List of (solution, coverage, filter_count, filter_variety) tuples
         """
-        print(f"Starting greedy optimization with {num_trials} trials...")
+        # Number of complete optimization runs
+        num_runs = 5
+        all_solutions = []  # Store solutions from all runs
         
-        # Check for large areas and adjust strategy if needed
-        area_size = self.effective_length * self.effective_width
-        large_area = area_size > 100000
-        
-        if large_area:
-            print(f"Large area detected: {self.effective_length} x {self.effective_width}")
-            print("Using adaptive placement strategy for improved performance")
-        
-        # If we have more filter types than the maximum allowed, we need to select a subset
-        all_filter_sizes = self.filter_sizes.copy()
-        best_selected_types = []
-        
-        if len(all_filter_sizes) > self.max_filter_types:
-            print(f"Selecting best {self.max_filter_types} filter types from {len(all_filter_sizes)} options")
-            self.selected_filter_types = []  # Reset selected types
-            
-            # Try different combinations of filter types
-            best_subset_coverage = 0
-            
-            # First try with the target types (target is usually 2)
-            target_types = min(2, self.max_filter_types)  # Default target is 2 unless max is less
-            
-            # Calculate areas for sorting
-            areas = [(length*width, (length, width)) for length, width in all_filter_sizes]
-            areas.sort(reverse=True)  # Sort by area, largest first
-            
-            # Try various combinations:
-            # 1. The largest 2-3 filter types by area
-            # 2. Random combinations
-            # 3. A mix of sizes (largest, medium, smallest)
-            combinations_to_try = []
-            
-            # Add the largest types
-            for i in range(1, self.max_filter_types + 1):
-                subset = [size for _, size in areas[:i]]
-                combinations_to_try.append(subset)
-            
-            # Add some random combinations
-            num_random = min(5, 2**len(all_filter_sizes))  # Limit the number of random combinations
-            for _ in range(num_random):
-                random_subset = random.sample(all_filter_sizes, 
-                                            random.randint(1, min(len(all_filter_sizes), self.max_filter_types)))
-                combinations_to_try.append(random_subset)
-            
-            # Add a mix of sizes if we have enough filter types
-            if len(areas) >= 3:
-                mix_subset = [areas[0][1], areas[len(areas)//2][1], areas[-1][1]]  # Largest, middle, smallest
-                combinations_to_try.append(mix_subset[:self.max_filter_types])
-            
-            # Try each combination
-            for subset in combinations_to_try:
-                self.filter_sizes = subset
-                
-                # Run a few trials with this subset
-                subset_trials = max(2, num_trials // len(combinations_to_try))
-                for trial in range(subset_trials):
-                    # Create a grid for the effective area
-                    grid = np.zeros((int(self.effective_width), int(self.effective_length)))
-                    solution = []
-                    
-                    # Randomize the order of filter sizes for this trial
-                    filter_sizes = self.filter_sizes.copy()
-                    random.shuffle(filter_sizes)
-                    
-                    # Keep trying to place filters until no more can be placed
-                    placed_filter = True
-                    while placed_filter:
-                        placed_filter = False
-                        
-                        # Try each filter size
-                        for filter_length, filter_width in filter_sizes:
-                            # Try both orientations
-                            for length, width in [(filter_length, filter_width), (filter_width, filter_length)]:
-                                # For large areas, use adaptive step sizes to reduce computation
-                                area_size = self.effective_length * self.effective_width
-                                if area_size > 100000:
-                                    # Step size based on filter size and area size 
-                                    # For very large areas, use larger step sizes
-                                    x_step = max(1, int(length/2))  # Larger step for larger filters
-                                    y_step = max(1, int(width/2))   # Larger step for larger filters
-                                    
-                                    # For truly massive areas (like 10000x8000), use even larger steps
-                                    if area_size > 1000000:
-                                        x_step = max(x_step, int(length))
-                                        y_step = max(y_step, int(width))
-                                else:
-                                    # Original step size for smaller areas
-                                    x_step = max(1, int(length//4))
-                                    y_step = max(1, int(width//4))
-                                
-                                # Scan the grid for possible placement
-                                for start_x in range(0, int(self.effective_length - length) + 1, x_step):
-                                    for start_y in range(0, int(self.effective_width - width) + 1, y_step):
-                                        if self._can_place_filter(grid, length, width, start_x, start_y):
-                                            # Place the filter
-                                            grid = self._place_filter(grid, length, width, start_x, start_y)
-                                            solution.append((len(solution) + 1, length, width, start_x, start_y))
-                                            placed_filter = True
-                                            break
-                                    if placed_filter:
-                                        break
-                                if placed_filter:
-                                    break
-                            if placed_filter:
-                                break
-                    
-                    # Calculate coverage for this solution
-                    coverage, _, _ = self._calculate_metrics(solution)
-                    
-                    # Update the best subset if this one is better
-                    if coverage > best_subset_coverage:
-                        best_subset_coverage = coverage
-                        best_selected_types = subset
-                        
-                        # Also update the best overall solution if applicable
-                        if self._update_best_solution(solution):
-                            print(f"  Found improved solution with subset: {subset}")
-            
-            # Set the selected filter types
-            self.selected_filter_types = best_selected_types
-            self.filter_sizes = best_selected_types
-            
-            print(f"Selected filter types: {self.selected_filter_types}")
-        else:
-            # If we're already within the limit, use all filter types
-            self.selected_filter_types = all_filter_sizes
-        
-        # Now run the main optimization with the selected filter types
-        for trial in range(num_trials):
-            # Call progress callback if exists
+        # Run complete optimization multiple times
+        for run in range(num_runs):
             if self.progress_callback:
-                should_continue = self.progress_callback(trial + 1, num_trials)
-                if not should_continue:
-                    print("Optimization cancelled by user.")
-                    break
-                    
-            if trial % 5 == 0:
-                print(f"  Trial {trial+1}/{num_trials}")
-                
-            # Create a grid for the effective area
-            grid = np.zeros((int(self.effective_width), int(self.effective_length)))
-            solution = []
+                self.progress_callback(run * num_trials, num_runs * num_trials, 
+                                    improved=False, 
+                                    message=f"Starting optimization run {run + 1}/{num_runs}")
             
-            # Randomize the order of filter sizes for this trial
-            filter_sizes = self.filter_sizes.copy()
-            random.shuffle(filter_sizes)
+            # Reset solutions for this run
+            run_solutions = []
             
-            # Keep trying to place filters until no more can be placed
-            placed_filter = True
-            while placed_filter:
-                placed_filter = False
-                
-                # Try each filter size
-                for filter_length, filter_width in filter_sizes:
-                    # Try both orientations
-                    for length, width in [(filter_length, filter_width), (filter_width, filter_length)]:
-                        # Scan the grid for possible placement
-                        for start_x in range(0, int(self.effective_length - length) + 1):
-                            for start_y in range(0, int(self.effective_width - width) + 1):
-                                if self._can_place_filter(grid, length, width, start_x, start_y):
-                                    # Place the filter
-                                    grid = self._place_filter(grid, length, width, start_x, start_y)
-                                    solution.append((len(solution) + 1, length, width, start_x, start_y))
-                                    placed_filter = True
-                                    break
-                            if placed_filter:
-                                break
-                        if placed_filter:
-                            break
-                    if placed_filter:
-                        break
-            
-            # Update the best solution if this one is better
-            was_improved = self._update_best_solution(solution)
-            if was_improved:
-                print(f"  Found improved solution in trial {trial+1}")
-                
-                # Call progress callback with improvement flag if exists
+            # Run trials for this optimization
+            for trial in range(num_trials):
                 if self.progress_callback:
-                    self.progress_callback(trial + 1, num_trials, True)
+                    overall_progress = run * num_trials + trial
+                    if not self.progress_callback(overall_progress, num_runs * num_trials,
+                                                message=f"Run {run + 1}/{num_runs}, Trial {trial + 1}/{num_trials}"):
+                        break
+                
+                # Create a new solution
+                solution = self._create_single_solution()
+                
+                if solution:
+                    metrics = self._calculate_metrics(solution)
+                    run_solutions.append((solution, *metrics))
+                    
+                    if self.progress_callback:
+                        self.progress_callback(overall_progress, num_runs * num_trials, 
+                                            improved=True,
+                                            message=f"Run {run + 1}/{num_runs}: Found solution with {metrics[0]:.1%} coverage")
+            
+            # Add the best solutions from this run to the overall solutions
+            if run_solutions:
+                # Sort solutions from this run
+                run_solutions.sort(key=lambda x: (x[1], -x[2], -x[3]), reverse=True)
+                # Add the best solution from this run to all solutions
+                all_solutions.append(run_solutions[0])
         
-        # Restore the original filter sizes after optimization
-        self.filter_sizes = all_filter_sizes
+        # Sort all collected solutions by multiple criteria
+        all_solutions.sort(key=lambda x: (x[1], -x[2], -x[3]), reverse=True)
         
-        return self.best_solution
+        # Select the best distinct solutions
+        self.solutions = []
+        seen_coverages = set()
+        
+        for solution, coverage, count, variety in all_solutions:
+            # Round coverage to 3 decimal places to group similar solutions
+            rounded_coverage = round(coverage, 3)
+            
+            # Only add if we haven't seen a very similar coverage
+            if rounded_coverage not in seen_coverages:
+                self.solutions.append((solution, coverage, count, variety))
+                seen_coverages.add(rounded_coverage)
+                
+                # Stop after finding max_solutions distinct solutions
+                if len(self.solutions) >= self.max_solutions:
+                    break
+        
+        return self.solutions
     
     def optimize_simulated_annealing(self, initial_temp=100, cooling_rate=0.8, iterations=50, max_temp_levels=10):
         """
@@ -704,104 +588,155 @@ class FilterPlacementOptimizer:
         
         return self.gap_mask
     
-    # Add these functions to filter_optimizer.py
-
-def _place_filter_strategic(self, grid, length, width, solution):
-    """
-    Place a filter using a strategic sampling approach for large areas.
-    This method samples the grid at strategic locations rather than
-    exhaustively checking every position.
-    
-    Returns True if a filter was placed, False otherwise.
-    """
-    # For very large areas, we'll use a more strategic approach
-    area_size = self.effective_length * self.effective_width
-    
-    # Calculate appropriate step sizes based on area size and filter dimensions
-    if area_size > 10000000:  # Extremely large (e.g., 50000x50000)
-        base_step = min(length, width) * 2
-    elif area_size > 1000000:  # Very large (e.g., 10000x8000)
-        base_step = min(length, width)
-    else:  # Large but not extreme
-        base_step = min(length, width) / 2
+    def _create_single_solution(self):
+        """Create a single solution using the greedy approach."""
+        # Create a grid for the effective area
+        grid = np.zeros((int(self.effective_width), int(self.effective_length)))
+        solution = []
         
-    # Ensure minimum step size of 1
-    step_size = max(1, int(base_step))
-    
-    # First try placing at the borders (more efficient packing usually happens at edges)
-    border_positions = self._get_border_positions(length, width, step_size)
-    
-    for start_x, start_y in border_positions:
-        if self._can_place_filter(grid, length, width, start_x, start_y):
-            grid = self._place_filter(grid, length, width, start_x, start_y)
-            solution.append((len(solution) + 1, length, width, start_x, start_y))
-            return True
+        # If we have more filter types than the maximum allowed, we need to select a subset
+        all_filter_sizes = self.filter_sizes.copy()
+        
+        if len(all_filter_sizes) > self.max_filter_types:
+            # Randomly select max_filter_types number of filter sizes
+            self.selected_filter_types = random.sample(all_filter_sizes, self.max_filter_types)
+            filter_sizes = self.selected_filter_types
+        else:
+            # If we're already within the limit, use all filter types
+            self.selected_filter_types = all_filter_sizes
+            filter_sizes = all_filter_sizes
             
-    # Next, try a grid-based sampling approach
-    for start_x in range(0, int(self.effective_length - length) + 1, step_size):
-        # For very large areas, sample rows less frequently too
-        y_step = step_size if area_size > 1000000 else max(1, int(step_size/2))
+        # Randomize the order of filter sizes for this trial
+        filter_sizes = filter_sizes.copy()
+        random.shuffle(filter_sizes)
         
-        for start_y in range(0, int(self.effective_width - width) + 1, y_step):
+        # Keep trying to place filters until no more can be placed
+        placed_filter = True
+        while placed_filter:
+            placed_filter = False
+            
+            # Try each filter size
+            for filter_length, filter_width in filter_sizes:
+                # Try both orientations
+                for length, width in [(filter_length, filter_width), (filter_width, filter_length)]:
+                    # For large areas, use strategic placement
+                    if self.is_large_area:
+                        if self._place_filter_strategic(grid, length, width, solution):
+                            placed_filter = True
+                            break
+                    else:
+                        # For smaller areas, use exhaustive search
+                        for start_x in range(0, int(self.effective_length - length) + 1):
+                            for start_y in range(0, int(self.effective_width - width) + 1):
+                                if self._can_place_filter(grid, length, width, start_x, start_y):
+                                    # Place the filter
+                                    grid = self._place_filter(grid, length, width, start_x, start_y)
+                                    solution.append((len(solution) + 1, length, width, start_x, start_y))
+                                    placed_filter = True
+                                    break
+                            if placed_filter:
+                                break
+                if placed_filter:
+                    break
+                    
+        return solution
+
+    def _place_filter_strategic(self, grid, length, width, solution):
+        """
+        Place a filter using a strategic sampling approach for large areas.
+        This method samples the grid at strategic locations rather than
+        exhaustively checking every position.
+        
+        Returns True if a filter was placed, False otherwise.
+        """
+        # For very large areas, we'll use a more strategic approach
+        area_size = self.effective_length * self.effective_width
+        
+        # Calculate appropriate step sizes based on area size and filter dimensions
+        if area_size > 10000000:  # Extremely large (e.g., 50000x50000)
+            base_step = min(length, width) * 2
+        elif area_size > 1000000:  # Very large (e.g., 10000x8000)
+            base_step = min(length, width)
+        else:  # Large but not extreme
+            base_step = min(length, width) / 2
+        
+        # Ensure minimum step size of 1
+        step_size = max(1, int(base_step))
+        
+        # First try placing at the borders (more efficient packing usually happens at edges)
+        border_positions = self._get_border_positions(length, width, step_size)
+        
+        for start_x, start_y in border_positions:
             if self._can_place_filter(grid, length, width, start_x, start_y):
                 grid = self._place_filter(grid, length, width, start_x, start_y)
                 solution.append((len(solution) + 1, length, width, start_x, start_y))
                 return True
-                
-    # If we're still looking, try a more randomized approach for diversity
-    if area_size > 1000000:
-        return self._place_filter_random(grid, length, width, solution, 30)
-                
-    # Unable to place a filter
-    return False
-    
-def _get_border_positions(self, length, width, step_size):
-    """
-    Generate positions along the borders of the effective area.
-    These are often good places to start placing filters.
-    """
-    positions = []
-    
-    # Left border
-    for y in range(0, int(self.effective_width - width) + 1, step_size):
-        positions.append((0, y))
-        
-    # Right border
-    right_x = int(self.effective_length - length)
-    for y in range(0, int(self.effective_width - width) + 1, step_size):
-        positions.append((right_x, y))
-        
-    # Top border (excluding corners already added)
-    for x in range(step_size, right_x, step_size):
-        positions.append((x, 0))
-        
-    # Bottom border (excluding corners already added)
-    bottom_y = int(self.effective_width - width)
-    for x in range(step_size, right_x, step_size):
-        positions.append((x, bottom_y))
-        
-    return positions
-    
-def _place_filter_random(self, grid, length, width, solution, attempts=20):
-    """
-    Try to place a filter at random positions.
-    This introduces diversity in the placement for large areas.
-    """
-    import random
-    
-    max_x = int(self.effective_length - length)
-    max_y = int(self.effective_width - width)
-    
-    if max_x <= 0 or max_y <= 0:
-        return False
-        
-    for _ in range(attempts):
-        start_x = random.randint(0, max_x)
-        start_y = random.randint(0, max_y)
-        
-        if self._can_place_filter(grid, length, width, start_x, start_y):
-            grid = self._place_filter(grid, length, width, start_x, start_y)
-            solution.append((len(solution) + 1, length, width, start_x, start_y))
-            return True
             
-    return False
+        # Next, try a grid-based sampling approach
+        for start_x in range(0, int(self.effective_length - length) + 1, step_size):
+            # For very large areas, sample rows less frequently too
+            y_step = step_size if area_size > 1000000 else max(1, int(step_size/2))
+            
+            for start_y in range(0, int(self.effective_width - width) + 1, y_step):
+                if self._can_place_filter(grid, length, width, start_x, start_y):
+                    grid = self._place_filter(grid, length, width, start_x, start_y)
+                    solution.append((len(solution) + 1, length, width, start_x, start_y))
+                    return True
+                
+        # If we're still looking, try a more randomized approach for diversity
+        if area_size > 1000000:
+            return self._place_filter_random(grid, length, width, solution, 30)
+                
+        # Unable to place a filter
+        return False
+    
+    def _get_border_positions(self, length, width, step_size):
+        """
+        Generate positions along the borders of the effective area.
+        These are often good places to start placing filters.
+        """
+        positions = []
+        
+        # Left border
+        for y in range(0, int(self.effective_width - width) + 1, step_size):
+            positions.append((0, y))
+        
+        # Right border
+        right_x = int(self.effective_length - length)
+        for y in range(0, int(self.effective_width - width) + 1, step_size):
+            positions.append((right_x, y))
+        
+        # Top border (excluding corners already added)
+        for x in range(step_size, right_x, step_size):
+            positions.append((x, 0))
+        
+        # Bottom border (excluding corners already added)
+        bottom_y = int(self.effective_width - width)
+        for x in range(step_size, right_x, step_size):
+            positions.append((x, bottom_y))
+        
+        return positions
+    
+    def _place_filter_random(self, grid, length, width, solution, attempts=20):
+        """
+        Try to place a filter at random positions.
+        This introduces diversity in the placement for large areas.
+        """
+        import random
+        
+        max_x = int(self.effective_length - length)
+        max_y = int(self.effective_width - width)
+        
+        if max_x <= 0 or max_y <= 0:
+            return False
+        
+        for _ in range(attempts):
+            start_x = random.randint(0, max_x)
+            start_y = random.randint(0, max_y)
+            
+            if self._can_place_filter(grid, length, width, start_x, start_y):
+                grid = self._place_filter(grid, length, width, start_x, start_y)
+                solution.append((len(solution) + 1, length, width, start_x, start_y))
+                return True
+            
+        return False

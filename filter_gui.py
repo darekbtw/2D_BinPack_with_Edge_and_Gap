@@ -30,9 +30,10 @@ class FilterPlacementGUI:
         ]
         self.max_filter_types = 3  # Default max filter types
         
-        # Initialize optimizer
+        # Initialize optimizer and solutions
         self.optimizer = None
-        self.current_solution = None
+        self.solutions = []  # List of (solution, coverage, filter_count, filter_variety) tuples
+        self.current_solution_index = 0
         
         # Create frames
         self.create_frames()
@@ -40,6 +41,7 @@ class FilterPlacementGUI:
         self.create_filter_size_controls()
         self.create_action_buttons()
         self.create_plot_area()
+        self.create_solution_navigation()
         
     def create_frames(self):
         # Left panel for inputs
@@ -279,6 +281,79 @@ class FilterPlacementGUI:
         # Draw the canvas
         self.canvas.draw()
         
+    def create_solution_navigation(self):
+        """Create navigation controls for multiple solutions."""
+        # Navigation frame
+        self.nav_frame = ttk.Frame(self.right_frame)
+        self.nav_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
+        
+        # Previous button
+        self.prev_btn = ttk.Button(self.nav_frame, text="← Previous", command=self.show_previous_solution)
+        self.prev_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Solution counter
+        self.solution_counter = ttk.Label(self.nav_frame, text="Solution 0/0")
+        self.solution_counter.pack(side=tk.LEFT, padx=10)
+        
+        # Next button
+        self.next_btn = ttk.Button(self.nav_frame, text="Next →", command=self.show_next_solution)
+        self.next_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Solution info label
+        self.solution_info = ttk.Label(self.nav_frame, text="")
+        self.solution_info.pack(side=tk.RIGHT, padx=10)
+        
+        # Initially disable navigation
+        self.update_navigation_controls()
+        
+    def update_navigation_controls(self):
+        """Update the state of navigation controls based on available solutions."""
+        num_solutions = len(self.solutions)
+        
+        # Update solution counter
+        if num_solutions > 0:
+            self.solution_counter.config(text=f"Solution {self.current_solution_index + 1}/{num_solutions}")
+        else:
+            self.solution_counter.config(text="No solutions")
+            
+        # Update navigation buttons
+        self.prev_btn.config(state=tk.NORMAL if self.current_solution_index > 0 else tk.DISABLED)
+        self.next_btn.config(state=tk.NORMAL if self.current_solution_index < num_solutions - 1 else tk.DISABLED)
+        
+        # Update solution info
+        if num_solutions > 0:
+            solution, coverage, filter_count, filter_variety = self.solutions[self.current_solution_index]
+            info_text = f"Coverage: {coverage:.1%} | Filters: {filter_count} | Types: {filter_variety}"
+            self.solution_info.config(text=info_text)
+        else:
+            self.solution_info.config(text="")
+            
+    def show_previous_solution(self):
+        """Show the previous solution if available."""
+        if self.current_solution_index > 0:
+            self.current_solution_index -= 1
+            self.update_visualization()
+            self.update_navigation_controls()
+            
+    def show_next_solution(self):
+        """Show the next solution if available."""
+        if self.current_solution_index < len(self.solutions) - 1:
+            self.current_solution_index += 1
+            self.update_visualization()
+            self.update_navigation_controls()
+            
+    def update_visualization(self):
+        """Update the visualization with the current solution."""
+        if self.solutions and 0 <= self.current_solution_index < len(self.solutions):
+            solution, _, _, _ = self.solutions[self.current_solution_index]
+            visualize_solution(
+                optimizer=self.optimizer,
+                solution=solution,
+                ax=self.ax,
+                fig=self.fig
+            )
+            self.canvas.draw()
+            
     def update_parameters_from_ui(self):
         try:
             # Get values from UI inputs
@@ -336,79 +411,140 @@ class FilterPlacementGUI:
         # Calculate area size for progress messaging
         area_size = self.area_length * self.area_width
         
-        # Show progress dialog with more information for large areas
+        # Create and configure progress window
         progress_window = tk.Toplevel(self.root)
         progress_window.title("Optimization in Progress")
-        progress_window.geometry("400x150")
+        progress_window.geometry("400x200")
         progress_window.transient(self.root)
         progress_window.grab_set()
         
+        # Set up progress display
         if area_size > 100000:
             progress_text = (
-                f"Running optimization with {trials} trials for large area...\n"
+                f"Running 5 complete optimizations with {trials} trials each...\n"
                 f"Using adaptive algorithms for better performance.\n"
                 f"Please wait, this may take longer than usual."
             )
         else:
-            progress_text = f"Running optimization with {trials} trials...\nPlease wait..."
-            
+            progress_text = f"Running 5 complete optimizations with {trials} trials each...\nPlease wait..."
+        
         progress_label = ttk.Label(progress_window, text=progress_text)
-        progress_label.pack(pady=20)
+        progress_label.pack(pady=10)
         
-        # Add a progress bar for visual feedback
-        progress = ttk.Progressbar(progress_window, mode='indeterminate')
+        # Add a more detailed status label
+        status_label = ttk.Label(progress_window, text="Starting optimization...")
+        status_label.pack(pady=5)
+        
+        # Add a counter for current trial
+        trial_label = ttk.Label(progress_window, text="Run: 0/5, Trial: 0/0")
+        trial_label.pack(pady=5)
+        
+        # Add a progress bar
+        progress = ttk.Progressbar(progress_window, mode='determinate', maximum=trials * 5)  # 5 complete runs
         progress.pack(fill=tk.X, padx=20, pady=10)
-        progress.start(10)
         
-        progress_window.update()
+        # Cancel button
+        cancel_var = tk.BooleanVar(value=False)
         
-        # Run optimization
-        self.current_solution = self.optimizer.optimize_greedy(num_trials=trials)
+        def cancel_optimization():
+            cancel_var.set(True)
+            status_label.config(text="Cancelling optimization...")
         
-        # Close progress dialog
-        progress_window.destroy()
+        cancel_button = ttk.Button(progress_window, text="Cancel", command=cancel_optimization)
+        cancel_button.pack(pady=10)
         
-        # Scale solution back to original dimensions if scaling was applied
-        if scaled and self.current_solution:
-            self.current_solution = self.scale_solution_back(self.current_solution)
+        # Define progress callback 
+        def update_progress(current_trial, total_trials, improved=False, message=None):
+            # Update the progress display
+            if cancel_var.get():
+                return False  # Signal to stop optimization
+                
+            progress['value'] = current_trial
             
-            # Also restore original dimensions in the optimizer for visualization
-            self.optimizer.area_length = self.original_area_length
-            self.optimizer.area_width = self.original_area_width
-            self.optimizer.edge_gap = self.original_edge_gap
-            self.optimizer.filter_gap = self.original_filter_gap
-            self.optimizer.effective_length = self.original_area_length - 2 * self.original_edge_gap
-            self.optimizer.effective_width = self.original_area_width - 2 * self.original_edge_gap
+            if message:
+                status_label.config(text=message)
+            elif improved:
+                status_label.config(text=f"Found improved solution in trial {current_trial}")
             
-            # Scale the grid resolution
-            if hasattr(self.optimizer, 'grid_resolution'):
-                self.optimizer.grid_resolution *= self.scale_factor
+            # Update trial label with run and trial information
+            run_number = (current_trial // trials) + 1
+            trial_in_run = (current_trial % trials) + 1
+            trial_label.config(text=f"Run: {run_number}/5, Trial: {trial_in_run}/{trials}")
+            
+            # Critical: Update the window to show changes
+            progress_window.update_idletasks()
+            progress_window.update()
+            
+            return True  # Continue optimization
         
-        # Visualize results
-        if self.current_solution:
-            visualize_solution(
-                optimizer=self.optimizer,
-                solution=self.current_solution, 
-                ax=self.ax, 
-                fig=self.fig
-            )
-            self.canvas.draw()
-            
-            # Show which filter types were selected
-            if hasattr(self.optimizer, 'selected_filter_types') and self.optimizer.selected_filter_types:
-                # Scale the filter types back to original dimensions for display
-                if scaled:
-                    selected_types = [f"{l*self.scale_factor:.2f}x{w*self.scale_factor:.2f}" 
-                                    for l, w in self.optimizer.selected_filter_types]
-                else:
-                    selected_types = [f"{l}x{w}" for l, w in self.optimizer.selected_filter_types]
+        # Set the progress callback
+        self.optimizer.progress_callback = update_progress
+        
+        # Use a background thread for optimization to keep UI responsive
+        import threading
+        
+        def run_optimization_thread():
+            try:
+                self.solutions = self.optimizer.optimize_greedy(num_trials=trials)
+                
+                # Scale solutions back to original dimensions if scaling was applied
+                if scaled and self.solutions:
+                    self.solutions = [(self.scale_solution_back(solution), coverage, count, variety)
+                                    for solution, coverage, count, variety in self.solutions]
                     
-                messagebox.showinfo("Selected Filter Types", 
-                                f"The optimizer selected {len(selected_types)} filter types from "
-                                f"{len(self.original_filter_sizes if scaled else self.filter_sizes)} options.\n\n"
-                                f"Selected types: {', '.join(selected_types)}")
-        else:
-            messagebox.showinfo("Result", "No valid solution found. Try different parameters.")
+                    # Also restore original dimensions in the optimizer for visualization
+                    self.optimizer.area_length = self.original_area_length
+                    self.optimizer.area_width = self.original_area_width
+                    self.optimizer.edge_gap = self.original_edge_gap
+                    self.optimizer.filter_gap = self.original_filter_gap
+                    self.optimizer.effective_length = self.original_area_length - 2 * self.original_edge_gap
+                    self.optimizer.effective_width = self.original_area_width - 2 * self.original_edge_gap
+                    
+                    # Scale the grid resolution
+                    if hasattr(self.optimizer, 'grid_resolution'):
+                        self.optimizer.grid_resolution *= self.scale_factor
+                
+                # Ensure we're back on the main thread for UI updates
+                self.root.after(100, complete_optimization)
+            except Exception as e:
+                # Handle any exceptions
+                error_message = str(e)
+                self.root.after(100, lambda: show_error(error_message))
+        
+        def complete_optimization():
+            # Close progress dialog
+            if progress_window.winfo_exists():  # Check if window still exists
+                progress_window.destroy()
+            
+            # Reset solution index and update visualization
+            self.current_solution_index = 0
+            self.update_visualization()
+            self.update_navigation_controls()
+            
+            # Show summary of results
+            if self.solutions:
+                summary = "Optimization complete!\n\n"
+                summary += f"Found {len(self.solutions)} distinct solutions:\n"
+                for i, (_, coverage, count, variety) in enumerate(self.solutions, 1):
+                    summary += f"\nSolution {i}:\n"
+                    summary += f"Coverage: {coverage:.1%}\n"
+                    summary += f"Filter Count: {count}\n"
+                    summary += f"Filter Types: {variety}\n"
+                messagebox.showinfo("Optimization Results", summary)
+            else:
+                messagebox.showinfo("Result", "No valid solutions found. Try different parameters.")
+        
+        def show_error(error_message):
+            # Close progress dialog
+            if progress_window.winfo_exists():  # Check if window still exists
+                progress_window.destroy()
+            
+            messagebox.showerror("Optimization Error", f"An error occurred during optimization:\n{error_message}")
+        
+        # Start the optimization thread
+        optimization_thread = threading.Thread(target=run_optimization_thread)
+        optimization_thread.daemon = True  # Thread will close when main program exits
+        optimization_thread.start()
             
     def count_filter_types_in_solution(self, solution):
         # Count unique filter types in the solution
