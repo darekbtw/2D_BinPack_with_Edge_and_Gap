@@ -107,8 +107,13 @@ class FilterPlacementGUI:
         explanation_label.grid(column=0, row=0, columnspan=3, sticky=tk.W, pady=(0, 5))
         
         # Headers
-        ttk.Label(self.filter_frame, text="Length").grid(column=1, row=1)
-        ttk.Label(self.filter_frame, text="Width").grid(column=2, row=1)
+        header_frame = ttk.Frame(self.filter_frame)
+        header_frame.grid(column=0, row=1, columnspan=4, sticky=tk.EW)
+        
+        # Add padding before Length header to align with entries
+        ttk.Label(header_frame, text="", width=10).pack(side=tk.LEFT)  # Spacer for option label
+        ttk.Label(header_frame, text="Length", width=10).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(header_frame, text="Width", width=10).pack(side=tk.LEFT, padx=(5, 5))
         
         # Frame for filter list with scrollbar
         filter_list_frame = ttk.Frame(self.filter_frame)
@@ -198,14 +203,14 @@ class FilterPlacementGUI:
         entry_frame = ttk.Frame(self.filter_entries_frame)
         entry_frame.pack(fill=tk.X, pady=2)
         
-        filter_label = ttk.Label(entry_frame, text=f"Option {row+1}:")
-        filter_label.pack(side=tk.LEFT, padx=5)
+        filter_label = ttk.Label(entry_frame, text=f"Option {row+1}:", width=10)
+        filter_label.pack(side=tk.LEFT)
         
-        length_entry = ttk.Entry(entry_frame, textvariable=length_var, width=8)
-        length_entry.pack(side=tk.LEFT, padx=5)
+        length_entry = ttk.Entry(entry_frame, textvariable=length_var, width=10)
+        length_entry.pack(side=tk.LEFT, padx=(0, 5))
         
-        width_entry = ttk.Entry(entry_frame, textvariable=width_var, width=8)
-        width_entry.pack(side=tk.LEFT, padx=5)
+        width_entry = ttk.Entry(entry_frame, textvariable=width_var, width=10)
+        width_entry.pack(side=tk.LEFT, padx=(5, 5))
         
         delete_btn = ttk.Button(entry_frame, text="X", width=2, 
                                 command=lambda f=entry_frame: self.delete_filter_entry(f))
@@ -251,14 +256,7 @@ class FilterPlacementGUI:
         ttk.Button(self.action_frame, text="Run Optimization", 
                 command=self.run_optimization).pack(fill=tk.X, pady=5)
         
-        # Filter type explanation
-        filter_constraint_frame = ttk.Frame(self.action_frame)
-        filter_constraint_frame.pack(fill=tk.X, pady=10)
         
-        constraint_text = "Please wait for the trials to complete"
-        constraint_label = ttk.Label(filter_constraint_frame, text=constraint_text, 
-                                foreground="blue", font=("", 9))
-        constraint_label.pack(anchor=tk.W)
         
     def create_plot_area(self):
         # Create matplotlib figure and canvas
@@ -421,26 +419,22 @@ class FilterPlacementGUI:
         # Set up progress display
         if area_size > 100000:
             progress_text = (
-                f"Running 5 complete optimizations with {trials} trials each...\n"
+                f"Running optimization...\n"
                 f"Using adaptive algorithms for better performance.\n"
                 f"Please wait, this may take longer than usual."
             )
         else:
-            progress_text = f"Running 5 complete optimizations with {trials} trials each...\nPlease wait..."
+            progress_text = "Running optimization...\nPlease wait..."
         
         progress_label = ttk.Label(progress_window, text=progress_text)
         progress_label.pack(pady=10)
         
-        # Add a more detailed status label
-        status_label = ttk.Label(progress_window, text="Starting optimization...")
+        # Add a status label for percentage
+        status_label = ttk.Label(progress_window, text="0% complete")
         status_label.pack(pady=5)
         
-        # Add a counter for current trial
-        trial_label = ttk.Label(progress_window, text="Run: 0/5, Trial: 0/0")
-        trial_label.pack(pady=5)
-        
         # Add a progress bar
-        progress = ttk.Progressbar(progress_window, mode='determinate', maximum=trials * 5)  # 5 complete runs
+        progress = ttk.Progressbar(progress_window, mode='determinate', maximum=100)  # 100% scale
         progress.pack(fill=tk.X, padx=20, pady=10)
         
         # Cancel button
@@ -459,17 +453,10 @@ class FilterPlacementGUI:
             if cancel_var.get():
                 return False  # Signal to stop optimization
                 
-            progress['value'] = current_trial
-            
-            if message:
-                status_label.config(text=message)
-            elif improved:
-                status_label.config(text=f"Found improved solution in trial {current_trial}")
-            
-            # Update trial label with run and trial information
-            run_number = (current_trial // trials) + 1
-            trial_in_run = (current_trial % trials) + 1
-            trial_label.config(text=f"Run: {run_number}/5, Trial: {trial_in_run}/{trials}")
+            # Calculate percentage complete
+            percent_complete = int((current_trial / total_trials) * 100)
+            progress['value'] = percent_complete
+            status_label.config(text=f"{percent_complete}% complete")
             
             # Critical: Update the window to show changes
             progress_window.update_idletasks()
