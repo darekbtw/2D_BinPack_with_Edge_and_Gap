@@ -203,7 +203,7 @@ class FilterPlacementGUI:
         entry_frame = ttk.Frame(self.filter_entries_frame)
         entry_frame.pack(fill=tk.X, pady=2)
         
-        filter_label = ttk.Label(entry_frame, text=f"Option {row+1}:", width=10)
+        filter_label = ttk.Label(entry_frame, text=f"Filter {row+1}:", width=10)
         filter_label.pack(side=tk.LEFT)
         
         length_entry = ttk.Entry(entry_frame, textvariable=length_var, width=10)
@@ -350,8 +350,7 @@ class FilterPlacementGUI:
                 ax=self.ax,
                 fig=self.fig
             )
-            self.canvas.draw()
-            
+            self.canvas.draw()            
     def update_parameters_from_ui(self):
         try:
             # Get values from UI inputs
@@ -562,21 +561,21 @@ class FilterPlacementGUI:
         self.scale_factor = 1.0  # Default - no scaling
         
         if max_dimension > 500:
-            # Scale down to bring max dimension to around 100-200
+            # Use a more precise scaling factor
             self.scale_factor = max_dimension / 100.0
             
-            # Scale all dimensions
+            # Scale all dimensions using floating-point arithmetic
             self.area_length = self.area_length / self.scale_factor
             self.area_width = self.area_width / self.scale_factor
             self.edge_gap = self.edge_gap / self.scale_factor
             self.filter_gap = self.filter_gap / self.scale_factor
             
-            # Scale filter sizes
+            # Scale filter sizes with full precision
             self.filter_sizes = [(length / self.scale_factor, width / self.scale_factor) 
                                 for length, width in self.filter_sizes]
             
-            print(f"Applied scaling factor of {self.scale_factor:.2f}")
-            print(f"Scaled dimensions: {self.area_length:.2f} x {self.area_width:.2f}")
+            print(f"Applied scaling factor of {self.scale_factor:.6f}")
+            print(f"Scaled dimensions: {self.area_length:.6f} x {self.area_width:.6f}")
             return True
         
         # No scaling needed
@@ -585,12 +584,12 @@ class FilterPlacementGUI:
 
     def scale_solution_back(self, solution):
         """
-        Scale the solution back to the original dimensions.
+        Scale the solution back to the original dimensions with full precision.
         """
         if not hasattr(self, 'scale_factor') or self.scale_factor == 1.0:
             return solution  # No scaling to undo
         
-        # Scale the solution back to original dimensions
+        # Scale the solution back to original dimensions with full precision
         scaled_solution = []
         for filter_id, length, width, start_x, start_y in solution:
             scaled_solution.append((

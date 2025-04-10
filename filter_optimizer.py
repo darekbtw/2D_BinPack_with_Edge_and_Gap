@@ -60,76 +60,71 @@ class FilterPlacementOptimizer:
         
     def _can_place_filter(self, grid, filter_length, filter_width, start_x, start_y):
         """Check if a filter can be placed at the given position."""
+        # Use exact floating-point calculations for boundaries
         end_x = start_x + filter_length
         end_y = start_y + filter_width
         
-        # Check if filter fits within the effective area
-        if end_x > self.effective_length or end_y > self.effective_width:
+        # Check if filter fits within the effective area with floating-point precision
+        if end_x > self.effective_length + 0.001 or end_y > self.effective_width + 0.001:  # Small epsilon for floating point comparison
             return False
-        
+            
         # For large areas, optimize the overlap check with vectorization when possible
         area_size = self.effective_length * self.effective_width
         if area_size > 100000 and hasattr(self, 'grid_resolution') and self.grid_resolution > 1:
-            # Convert coordinates to grid space
-            grid_start_x = max(0, int(start_x / self.grid_resolution))
-            grid_start_y = max(0, int(start_y / self.grid_resolution))
-            grid_end_x = min(self.grid_length, int(end_x / self.grid_resolution) + 1)
-            grid_end_y = min(self.grid_width, int(end_y / self.grid_resolution) + 1)
+            # Convert coordinates to grid space with ceiling for safety
+            grid_start_x = max(0, int(np.floor(start_x / self.grid_resolution)))
+            grid_start_y = max(0, int(np.floor(start_y / self.grid_resolution)))
+            grid_end_x = min(self.grid_length, int(np.ceil(end_x / self.grid_resolution)))
+            grid_end_y = min(self.grid_width, int(np.ceil(end_y / self.grid_resolution)))
             
-            # Check overlaps with vectorized operation (much faster for large areas)
+            # Check overlaps
             if np.any(grid[grid_start_y:grid_end_y, grid_start_x:grid_end_x] == 1):
                 return False
-            
-            # Calculate gap region to check
-            gap_cells = max(1, int(self.filter_gap / self.grid_resolution))
+                
+            # Calculate gap region with exact floating-point math
+            gap_cells = max(1, int(np.ceil(self.filter_gap / self.grid_resolution)))
             gap_start_x = max(0, grid_start_x - gap_cells)
             gap_start_y = max(0, grid_start_y - gap_cells)
             gap_end_x = min(self.grid_length, grid_end_x + gap_cells)
             gap_end_y = min(self.grid_width, grid_end_y + gap_cells)
             
-            # Create a mask for the filter's area (to exclude it from the gap check)
-            filter_mask = np.zeros((self.grid_width, self.grid_length), dtype=bool)
-            filter_mask[grid_start_y:grid_end_y, grid_start_x:grid_end_x] = True
-            
-            # Check gap constraints with vectorization
+            # Check gap constraints
             gap_region = grid[gap_start_y:gap_end_y, gap_start_x:gap_end_x]
-            gap_mask = np.zeros_like(gap_region, dtype=bool)
-            gap_mask_y_offset = grid_start_y - gap_start_y
-            gap_mask_x_offset = grid_start_x - gap_start_x
+            filter_area = np.zeros_like(gap_region, dtype=bool)
+            local_start_x = grid_start_x - gap_start_x
+            local_start_y = grid_start_y - gap_start_y
+            local_end_x = local_start_x + (grid_end_x - grid_start_x)
+            local_end_y = local_start_y + (grid_end_y - grid_start_y)
             
-            # Only create the mask if the offsets are valid
-            if (gap_mask_y_offset >= 0 and gap_mask_x_offset >= 0 and
-                gap_mask_y_offset + (grid_end_y - grid_start_y) <= gap_region.shape[0] and
-                gap_mask_x_offset + (grid_end_x - grid_start_x) <= gap_region.shape[1]):
-                gap_mask[gap_mask_y_offset:gap_mask_y_offset+(grid_end_y-grid_start_y), 
-                        gap_mask_x_offset:gap_mask_x_offset+(grid_end_x-grid_start_x)] = True
-                
-                # Check if there are filters in the gap region (excluding the filter area)
-                if np.any(np.logical_and(gap_region == 1, ~gap_mask)):
+            if (local_start_x >= 0 and local_start_y >= 0 and 
+                local_end_x <= gap_region.shape[1] and local_end_y <= gap_region.shape[0]):
+                filter_area[local_start_y:local_end_y, local_start_x:local_end_x] = True
+                if np.any(np.logical_and(gap_region == 1, ~filter_area)):
                     return False
             else:
-                # Fallback to the non-vectorized check for edge cases
-                for x in range(max(0, int(start_x - self.filter_gap)), min(int(self.effective_length), int(end_x + self.filter_gap))):
-                    for y in range(max(0, int(start_y - self.filter_gap)), min(int(self.effective_width), int(end_y + self.filter_gap))):
-                        # Only check cells outside the current filter
-                        if (x < start_x or x >= end_x or y < start_y or y >= end_y):
-                            # Only consider it a constraint if there's another filter here
+                # Fallback to exact floating-point checks for edge cases
+                for x in range(max(0, int(np.floor(start_x - self.filter_gap))), 
+                             min(int(self.effective_length), int(np.ceil(end_x + self.filter_gap)))):
+                    for y in range(max(0, int(np.floor(start_y - self.filter_gap))),
+                                 min(int(self.effective_width), int(np.ceil(end_y + self.filter_gap)))):
+                        if (x < start_x - 0.001 or x > end_x + 0.001 or 
+                            y < start_y - 0.001 or y > end_y + 0.001):
                             if 0 <= y < grid.shape[0] and 0 <= x < grid.shape[1] and grid[y, x] == 1:
                                 return False
         else:
-            # The original non-vectorized approach for smaller areas
-            # Check if the space is empty (no overlap with other filters)
-            for x in range(int(start_x), int(end_x)):
-                for y in range(int(start_y), int(end_y)):
+            # For smaller areas, use exact floating-point checks
+            for x in range(int(np.floor(start_x)), int(np.ceil(end_x))):
+                for y in range(int(np.floor(start_y)), int(np.ceil(end_y))):
                     if y < grid.shape[0] and x < grid.shape[1] and grid[y, x] == 1:
                         return False
                     
-            # Check filter gap constraints
-            for x in range(max(0, int(start_x - self.filter_gap)), min(int(self.effective_length), int(end_x + self.filter_gap))):
-                for y in range(max(0, int(start_y - self.filter_gap)), min(int(self.effective_width), int(end_y + self.filter_gap))):
-                    # Only check cells outside the current filter
-                    if (x < start_x or x >= end_x or y < start_y or y >= end_y):
-                        # Only consider it a constraint if there's another filter here
+            # Check filter gap constraints with exact floating-point math
+            for x in range(max(0, int(np.floor(start_x - self.filter_gap))),
+                         min(int(self.effective_length), int(np.ceil(end_x + self.filter_gap)))):
+                for y in range(max(0, int(np.floor(start_y - self.filter_gap))),
+                             min(int(self.effective_width), int(np.ceil(end_y + self.filter_gap)))):
+                    if (x < start_x - 0.001 or x > end_x + 0.001 or 
+                        y < start_y - 0.001 or y > end_y + 0.001):
                         if 0 <= y < grid.shape[0] and 0 <= x < grid.shape[1] and grid[y, x] == 1:
                             return False
                     
@@ -245,6 +240,43 @@ class FilterPlacementOptimizer:
             return True
         return False
         
+    def _center_solution(self, solution):
+        """
+        Center the entire solution by moving all filters as a group.
+        This distributes unused space evenly around the edges.
+        """
+        if not solution:
+            return solution
+
+        # Find the current bounds of the solution
+        min_x = float('inf')
+        max_x = float('-inf')
+        min_y = float('inf')
+        max_y = float('-inf')
+
+        for _, length, width, start_x, start_y in solution:
+            min_x = min(min_x, start_x)
+            max_x = max(max_x, start_x + length)
+            min_y = min(min_y, start_y)
+            max_y = max(max_y, start_y + width)
+
+        # Calculate the current size of the used area
+        used_width = max_y - min_y
+        used_length = max_x - min_x
+
+        # Calculate the offsets needed to center
+        x_offset = (self.effective_length - used_length) / 2 - min_x
+        y_offset = (self.effective_width - used_width) / 2 - min_y
+
+        # Create new centered solution
+        centered_solution = []
+        for filter_id, length, width, start_x, start_y in solution:
+            new_x = start_x + x_offset
+            new_y = start_y + y_offset
+            centered_solution.append((filter_id, length, width, new_x, new_y))
+
+        return centered_solution
+
     def optimize_greedy(self, num_trials=100):
         """
         Run multiple complete optimizations and find the best distinct solutions across all runs.
@@ -285,6 +317,8 @@ class FilterPlacementOptimizer:
                 solution = self._create_single_solution()
                 
                 if solution:
+                    # Center the solution
+                    solution = self._center_solution(solution)
                     metrics = self._calculate_metrics(solution)
                     run_solutions.append((solution, *metrics))
                     
@@ -348,6 +382,8 @@ class FilterPlacementOptimizer:
             print("No initial solution found. Exiting simulated annealing.")
             return None
             
+        # Center the initial solution
+        current_solution = self._center_solution(current_solution)
         current_coverage, current_count, current_variety = self._calculate_metrics(current_solution)
         print(f"Initial solution: Coverage={current_coverage*100:.2f}%, Filters={current_count}, Types={current_variety}")
         
@@ -372,6 +408,9 @@ class FilterPlacementOptimizer:
                 
                 # Create a neighboring solution by modifying the current one
                 new_solution = self._generate_neighbor(current_solution)
+                
+                # Center the new solution
+                new_solution = self._center_solution(new_solution)
                 
                 # Calculate new metrics
                 new_coverage, new_count, new_variety = self._calculate_metrics(new_solution)
@@ -475,37 +514,29 @@ class FilterPlacementOptimizer:
         return new_solution
     
     def create_gap_mask(self, resolution=None):
-        """Create a mask for tracking required gaps in the effective area.
-        
-        Parameters:
-        -----------
-        resolution : float, optional
-            Resolution of the grid (smaller values are more precise but use more memory)
-            If None, automatically calculates an appropriate resolution based on area size
-        """
-        # Automatically determine an appropriate resolution based on area size
+        """Create a mask for tracking required gaps in the effective area."""
+        # For this specific case with filter gaps and edge gaps, use a resolution
+        # that's a factor of both to avoid rounding errors
         if resolution is None:
-            # For extremely large areas, use a higher resolution factor
-            # This scales the resolution based on the area size
-            area_size = self.effective_length * self.effective_width
-            if area_size > 1000000:  # Very large area (e.g., 10000 x 8000)
-                resolution = max(self.filter_gap, min(self.effective_length, self.effective_width) / 500)
-            elif area_size > 100000:  # Large area
-                resolution = max(self.filter_gap / 2, min(self.effective_length, self.effective_width) / 300)
-            else:  # Small to medium area
-                resolution = 1  # Use the original resolution for small areas
-                
-            # Make sure resolution is at least 1 to avoid excessive memory usage
-            resolution = max(1, resolution)
-            print(f"Automatically selected resolution: {resolution}")
-            
+            # Use unit resolution (1) for precise placement
+            # This ensures we maintain exact dimensions without scaling
+            resolution = 1
+        
         # Initialize mask grid at the given resolution
         self.grid_resolution = resolution
-        self.grid_length = max(1, int(self.effective_length / resolution))
-        self.grid_width = max(1, int(self.effective_width / resolution))
+        self.grid_length = max(1, int(np.ceil(self.effective_length)))
+        self.grid_width = max(1, int(np.ceil(self.effective_width)))
         
         # 0 = available space, 1 = filter, 2 = required gap
         self.gap_mask = np.zeros((self.grid_width, self.grid_length), dtype=int)
+        
+        # Print actual dimensions being used
+        print(f"\nActual dimensions:")
+        print(f"Total area: {self.area_length} x {self.area_width}")
+        print(f"Effective area: {self.effective_length} x {self.effective_width}")
+        print(f"Edge gap: {self.edge_gap}")
+        print(f"Filter gap: {self.filter_gap}")
+        print(f"Grid resolution: {self.grid_resolution}")
     
     def update_gap_mask(self, solution):
         """Update the gap mask based on the current filter placement.
@@ -590,7 +621,7 @@ class FilterPlacementOptimizer:
     
     def _create_single_solution(self):
         """Create a single solution using the greedy approach."""
-        # Create a grid for the effective area
+        # Create a grid for the effective area (no scaling)
         grid = np.zeros((int(self.effective_width), int(self.effective_length)))
         solution = []
         
@@ -605,12 +636,48 @@ class FilterPlacementOptimizer:
             # If we're already within the limit, use all filter types
             self.selected_filter_types = all_filter_sizes
             filter_sizes = all_filter_sizes
-            
-        # Randomize the order of filter sizes for this trial
-        filter_sizes = filter_sizes.copy()
-        random.shuffle(filter_sizes)
         
-        # Keep trying to place filters until no more can be placed
+        # For systematic placement, try placing filters in rows
+        # Start from left edge, moving right by filter width + gap
+        for filter_length, filter_width in filter_sizes:
+            # Try both orientations
+            for length, width in [(filter_length, filter_width), (filter_width, filter_length)]:
+                # Calculate how many filters could theoretically fit in each row and column
+                # Add filter gap to account for spaces between filters
+                available_length = self.effective_length + self.filter_gap  # Add one gap because we need N-1 gaps for N filters
+                available_width = self.effective_width + self.filter_gap
+                
+                max_in_row = int(available_length / (length + self.filter_gap))
+                max_rows = int(available_width / (width + self.filter_gap))
+                
+                print(f"\nPlacement calculation for {length}x{width} filter:")
+                print(f"Available length: {available_length}")
+                print(f"Filter + gap: {length + self.filter_gap}")
+                print(f"Calculated max in row: {max_in_row}")
+                
+                # Try placing filters systematically
+                for row in range(max_rows):
+                    # Calculate Y position
+                    start_y = row * (width + self.filter_gap)
+                    
+                    # Try placing filters in this row
+                    for col in range(max_in_row):
+                        # Calculate X position
+                        start_x = col * (length + self.filter_gap)
+                        
+                        # Debug output for first placement attempt in each row
+                        if col == 0:
+                            print(f"\nAttempting placement in row {row}:")
+                            print(f"Start position: ({start_x}, {start_y})")
+                            print(f"End position: ({start_x + length}, {start_y + width})")
+                        
+                        if self._can_place_filter(grid, length, width, start_x, start_y):
+                            # Place the filter
+                            grid = self._place_filter(grid, length, width, start_x, start_y)
+                            solution.append((len(solution) + 1, length, width, start_x, start_y))
+                            print(f"Successfully placed filter at ({start_x}, {start_y})")
+        
+        # If systematic placement didn't work well, try filling remaining spaces
         placed_filter = True
         while placed_filter:
             placed_filter = False
@@ -619,124 +686,18 @@ class FilterPlacementOptimizer:
             for filter_length, filter_width in filter_sizes:
                 # Try both orientations
                 for length, width in [(filter_length, filter_width), (filter_width, filter_length)]:
-                    # For large areas, use strategic placement
-                    if self.is_large_area:
-                        if self._place_filter_strategic(grid, length, width, solution):
-                            placed_filter = True
-                            break
-                    else:
-                        # For smaller areas, use exhaustive search
-                        for start_x in range(0, int(self.effective_length - length) + 1):
-                            for start_y in range(0, int(self.effective_width - width) + 1):
-                                if self._can_place_filter(grid, length, width, start_x, start_y):
-                                    # Place the filter
-                                    grid = self._place_filter(grid, length, width, start_x, start_y)
-                                    solution.append((len(solution) + 1, length, width, start_x, start_y))
-                                    placed_filter = True
-                                    break
-                            if placed_filter:
+                    # For smaller areas, use exhaustive search for remaining spaces
+                    for start_x in range(0, int(self.effective_length - length) + 1):
+                        for start_y in range(0, int(self.effective_width - width) + 1):
+                            if self._can_place_filter(grid, length, width, start_x, start_y):
+                                # Place the filter
+                                grid = self._place_filter(grid, length, width, start_x, start_y)
+                                solution.append((len(solution) + 1, length, width, start_x, start_y))
+                                placed_filter = True
                                 break
+                        if placed_filter:
+                            break
                 if placed_filter:
                     break
                     
         return solution
-
-    def _place_filter_strategic(self, grid, length, width, solution):
-        """
-        Place a filter using a strategic sampling approach for large areas.
-        This method samples the grid at strategic locations rather than
-        exhaustively checking every position.
-        
-        Returns True if a filter was placed, False otherwise.
-        """
-        # For very large areas, we'll use a more strategic approach
-        area_size = self.effective_length * self.effective_width
-        
-        # Calculate appropriate step sizes based on area size and filter dimensions
-        if area_size > 10000000:  # Extremely large (e.g., 50000x50000)
-            base_step = min(length, width) * 2
-        elif area_size > 1000000:  # Very large (e.g., 10000x8000)
-            base_step = min(length, width)
-        else:  # Large but not extreme
-            base_step = min(length, width) / 2
-        
-        # Ensure minimum step size of 1
-        step_size = max(1, int(base_step))
-        
-        # First try placing at the borders (more efficient packing usually happens at edges)
-        border_positions = self._get_border_positions(length, width, step_size)
-        
-        for start_x, start_y in border_positions:
-            if self._can_place_filter(grid, length, width, start_x, start_y):
-                grid = self._place_filter(grid, length, width, start_x, start_y)
-                solution.append((len(solution) + 1, length, width, start_x, start_y))
-                return True
-            
-        # Next, try a grid-based sampling approach
-        for start_x in range(0, int(self.effective_length - length) + 1, step_size):
-            # For very large areas, sample rows less frequently too
-            y_step = step_size if area_size > 1000000 else max(1, int(step_size/2))
-            
-            for start_y in range(0, int(self.effective_width - width) + 1, y_step):
-                if self._can_place_filter(grid, length, width, start_x, start_y):
-                    grid = self._place_filter(grid, length, width, start_x, start_y)
-                    solution.append((len(solution) + 1, length, width, start_x, start_y))
-                    return True
-                
-        # If we're still looking, try a more randomized approach for diversity
-        if area_size > 1000000:
-            return self._place_filter_random(grid, length, width, solution, 30)
-                
-        # Unable to place a filter
-        return False
-    
-    def _get_border_positions(self, length, width, step_size):
-        """
-        Generate positions along the borders of the effective area.
-        These are often good places to start placing filters.
-        """
-        positions = []
-        
-        # Left border
-        for y in range(0, int(self.effective_width - width) + 1, step_size):
-            positions.append((0, y))
-        
-        # Right border
-        right_x = int(self.effective_length - length)
-        for y in range(0, int(self.effective_width - width) + 1, step_size):
-            positions.append((right_x, y))
-        
-        # Top border (excluding corners already added)
-        for x in range(step_size, right_x, step_size):
-            positions.append((x, 0))
-        
-        # Bottom border (excluding corners already added)
-        bottom_y = int(self.effective_width - width)
-        for x in range(step_size, right_x, step_size):
-            positions.append((x, bottom_y))
-        
-        return positions
-    
-    def _place_filter_random(self, grid, length, width, solution, attempts=20):
-        """
-        Try to place a filter at random positions.
-        This introduces diversity in the placement for large areas.
-        """
-        import random
-        
-        max_x = int(self.effective_length - length)
-        max_y = int(self.effective_width - width)
-        
-        if max_x <= 0 or max_y <= 0:
-            return False
-        
-        for _ in range(attempts):
-            start_x = random.randint(0, max_x)
-            start_y = random.randint(0, max_y)
-            
-            if self._can_place_filter(grid, length, width, start_x, start_y):
-                grid = self._place_filter(grid, length, width, start_x, start_y)
-                solution.append((len(solution) + 1, length, width, start_x, start_y))
-                return True
-            
-        return False
